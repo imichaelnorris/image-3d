@@ -510,6 +510,12 @@
       overflow: hidden;
       background: #000;
       border-radius: var(--image-3d-radius, 8px);
+      /* Own the touch surface so long-press / double-tap reach the viewer
+         instead of the host page's context menu / zoom defaults. */
+      touch-action: none;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
     .stack {
       position: absolute;
