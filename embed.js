@@ -71,25 +71,6 @@
 
   // ----- Shared dep loaders (one promise per dep across all instances) -----
 
-  // Lazy-loaded Three.js + OrbitControls for the mesh-preview phase.
-  // Separate Three.js instance from whatever GS3D bundles internally —
-  // each renderer owns its own canvas so no instance sharing is needed.
-  let threeLibPromise = null;
-  function loadThreeLib() {
-    if (threeLibPromise) return threeLibPromise;
-    threeLibPromise = (async () => {
-      const [three, orbitMod] = await Promise.all([
-        // ?bundle: ship Three.js + its internal deps as one file.
-        // Same for OrbitControls — without bundling, esm.sh splits
-        // it across many small chained requests on slow networks.
-        import(/* @vite-ignore */ 'https://esm.sh/three@0.166.1?bundle'),
-        import(/* @vite-ignore */ 'https://esm.sh/three@0.166.1/examples/jsm/controls/OrbitControls.js?bundle'),
-      ]);
-      return { THREE: three, OrbitControls: orbitMod.OrbitControls };
-    })();
-    return threeLibPromise;
-  }
-
   // Decode the custom .bin mesh-preview format produced by the Modal pipeline:
   //   20B header (magic "MESH", grid dims, fy, payload size, img dims)
   //   gzip(int16 positions, row-major, scale 1/512)
@@ -157,21 +138,6 @@
       }
     }
     return { positions: posArr, uvs: uvArr, indices: idxArr, textureUrl };
-  }
-
-  // Three.js-specific builder: take raw arrays, produce a Mesh.
-  function buildMeshFromPreview(THREE, decoded) {
-    const arrays = prepMeshArrays(decoded);
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(arrays.positions, 3));
-    geometry.setAttribute('uv', new THREE.BufferAttribute(arrays.uvs, 2));
-    geometry.setIndex(new THREE.BufferAttribute(arrays.indices, 1));
-    geometry.computeBoundingBox();
-    geometry.computeBoundingSphere();
-    const texture = new THREE.TextureLoader().load(arrays.textureUrl);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
-    return { mesh: new THREE.Mesh(geometry, material), texture, material, geometry, textureUrl: arrays.textureUrl };
   }
 
   // ---- Inlined custom WebGL mesh renderer (was mesh-renderer.js) ----
@@ -709,13 +675,6 @@
       if (!this._shadow.firstChild) this._renderShadow();
       this._updatePoster();
       this._updateSize();
-      // Pre-warm the renderer-specific deps. Custom path is already
-      // inlined into embed.js, so no fetch needed there. Three.js path
-      // still pulls from esm.sh — preload it so it's flying by the time
-      // the .bin arrives.
-      if (!this._useCustomRenderer()) {
-        loadThreeLib().catch(() => null);
-      }
 
       const lazy = this.getAttribute('loading') === 'lazy';
       if (lazy && 'IntersectionObserver' in window) {
@@ -891,23 +850,9 @@
       }
     }
 
-    _useCustomRenderer() {
-      const attr = this.getAttribute('renderer');
-      if (attr === 'custom') return true;
-      if (attr === 'three') return false;
-      try {
-        return new URLSearchParams(window.location.search).get('renderer') === 'custom';
-      } catch (_) {
-        return false;
-      }
-    }
-
     async _renderMeshPreview(previewUrl) {
       window.image3dLog?.phase('mesh:start');
-      if (this._useCustomRenderer()) {
-        return this._renderMeshCustom(previewUrl);
-      }
-      return this._renderMeshThree(previewUrl);
+      return this._renderMeshCustom(previewUrl);
     }
 
     async _renderMeshCustom(previewUrl) {
@@ -932,134 +877,6 @@
         custom: true,
         stop: handle.stop,
       };
-    }
-
-    async _renderMeshThree(previewUrl) {
-      const container = this._glbRoot;
-      const w = container.clientWidth || 600;
-      const h = container.clientHeight || 600;
-
-      // Fetch the .bin AND load Three.js in parallel. The .bin decode
-      // doesn't need Three; only the buffer-geometry build does. Without
-      // this, on slow networks Three.js + transitive esm.sh deps
-      // (~hundreds of KB unminified) gate the .bin fetch for tens of
-      // seconds — the user sees the page sit empty until both finish.
-      const [decoded, threeLib] = await Promise.all([
-        decodeMeshPreviewBin(previewUrl, this._abortCtrl?.signal).then((d) => { window.image3dLog?.phase('mesh:bin-decoded'); return d; }),
-        loadThreeLib().then((t) => { window.image3dLog?.phase('mesh:three-loaded'); return t; }),
-      ]);
-      const { THREE, OrbitControls } = threeLib;
-      // Resize host to the real image aspect ratio now that we know it.
-      // (Default was 1/1 from CSS until this point.)
-      if (decoded.imgW > 0 && decoded.imgH > 0) {
-        this.style.setProperty('--image-3d-aspect-ratio', `${decoded.imgW} / ${decoded.imgH}`);
-        this._aspectRatioSet = true;
-      }
-      const built = buildMeshFromPreview(THREE, decoded);
-      const { mesh } = built;
-      window.image3dLog?.phase('mesh:geometry-built');
-
-      const scene = new THREE.Scene();
-      scene.add(mesh);
-
-      // Camera setup is 1:1 with the splat viewer (mspz-image-viewer.js
-      // calculateFOV + the MODEL_ROTATION branch's initialCameraPosition
-      // /LookAt). Mesh is now in SHARP world coords (same space as the
-      // splat), so identical camera setup ⇒ identical default view ⇒
-      // mesh→splat handoff with no visible jump.
-      const fov = (decoded.fy > 0 && decoded.imgH > 0)
-        ? 2 * Math.atan2(decoded.imgH / 2, decoded.fy) * 180 / Math.PI
-        : 50;
-      const aspect = w / h;
-      const camera = new THREE.PerspectiveCamera(fov, aspect, 0.01, 1000);
-      camera.up.set(0, -1, 0);
-      camera.position.set(0, 0, 0);
-      camera.lookAt(0, 0, 0.5);
-
-      const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-      renderer.setSize(w, h, false);
-      renderer.setPixelRatio(window.devicePixelRatio);
-      container.appendChild(renderer.domElement);
-
-      const controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.08;
-      controls.target.set(0, 0, 0.5);
-      controls.update();
-
-      let running = true;
-      let firstPaint = false;
-      const tick = () => {
-        if (!running) return;
-        controls.update();
-        renderer.render(scene, camera);
-        if (!firstPaint) {
-          firstPaint = true;
-          window.image3dLog?.phase('mesh:first-paint');
-        }
-        requestAnimationFrame(tick);
-      };
-      tick();
-
-      const resize = () => {
-        const cw = container.clientWidth || w;
-        const ch = container.clientHeight || h;
-        camera.aspect = cw / ch;
-        camera.updateProjectionMatrix();
-        renderer.setSize(cw, ch, false);
-      };
-      const ro = new ResizeObserver(resize);
-      ro.observe(container);
-
-      this._glbState = {
-        THREE, scene, camera, controls, renderer, mesh,
-        stop: () => {
-          running = false;
-          ro.disconnect();
-          controls.dispose();
-          renderer.dispose();
-          built.geometry.dispose();
-          built.material.dispose();
-          built.texture.dispose();
-          URL.revokeObjectURL(built.textureUrl);
-          if (renderer.domElement.parentNode) {
-            renderer.domElement.parentNode.removeChild(renderer.domElement);
-          }
-        },
-      };
-    }
-
-    _transferCameraToSplat(mspzViewer) {
-      // Carry the mesh's orbit angle over to the splat. The two scenes
-      // live in different absolute coordinates (mesh is NDC-ish, splat
-      // is SHARP world), but as of the axis alignment commit they share
-      // the same up axis and forward direction. So we can transfer the
-      // ORIENTATION (direction from controls.target → camera) and let
-      // the splat keep its natural radius from its own target.
-      const gs = this._glbState;
-      if (!gs || !mspzViewer?.viewer) return;
-      const splatCamera = mspzViewer.viewer.camera;
-      const splatControls = mspzViewer.viewer.controls;
-      if (!splatCamera || !splatControls?.target) return;
-      const THREE = gs.THREE;
-
-      const meshDir = new THREE.Vector3()
-        .copy(gs.camera.position)
-        .sub(gs.controls.target);
-      if (meshDir.lengthSq() < 1e-12) return;
-      meshDir.normalize();
-
-      const splatOffset = new THREE.Vector3()
-        .copy(splatCamera.position)
-        .sub(splatControls.target);
-      const splatRadius = splatOffset.length() || 1;
-
-      splatCamera.position
-        .copy(splatControls.target)
-        .add(meshDir.multiplyScalar(splatRadius));
-      splatCamera.up.copy(gs.camera.up);
-      splatCamera.lookAt(splatControls.target);
-      if (typeof splatControls.update === 'function') splatControls.update();
     }
 
     async _readMspzAspectFromHeader(response) {

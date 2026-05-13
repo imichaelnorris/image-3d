@@ -46,7 +46,6 @@ Steps:
 | `width` / `height` | Explicit pixel dimensions. Overrides the default 600px / 80vh caps. Bare numbers are interpreted as px; full CSS values (`50%`, `40vw`) work too. |
 | `loading="lazy"` | Defer the fetch until the element scrolls near the viewport. |
 | `nobrand` | Hide the "mukba.ng" attribution pill in the bottom-right corner. |
-| `renderer="custom"` | Use the tiny hand-rolled WebGL renderer for the mesh-preview phase instead of Three.js. Much smaller payload (~10KB vs ~150KB) and ~6s faster on slow networks. Default still ships Three.js until visual parity is confirmed everywhere. |
 
 ## CSS custom properties
 
