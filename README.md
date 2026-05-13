@@ -1,5 +1,7 @@
 # `<image-3d>`
 
+[![Powered by mukba.ng](https://img.shields.io/badge/Powered_by-mukba.ng-7eb0ff?style=for-the-badge&labelColor=0a0a0c)](https://mukba.ng/)
+
 A drop-in web component that turns a 2D image URL into an interactive 3D embed. Drag to rotate, pinch to zoom.
 
 [**Live demo & docs →**](https://mukba.ng/image-3d/docs/)
