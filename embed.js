@@ -1092,6 +1092,9 @@
     }
 
     async _loadAndRender(sourceUrl) {
+      // Worker rejects bare paths; resolve against the page so callers
+      // can pass relative src like "/photo.jpg".
+      sourceUrl = new URL(sourceUrl, document.baseURI).href;
       this._abortCtrl = new AbortController();
       this._glbRenderPromise = null;
       this._aspectRatioSet = false;
@@ -1198,6 +1201,7 @@
       // mspz-src escape hatch. Skip the hash/generation flow entirely
       // — just fetch the bytes and hand them to the viewer. No mesh
       // preview, no completion stream.
+      mspzUrl = new URL(mspzUrl, document.baseURI).href;
       this._abortCtrl = new AbortController();
       this._glbRenderPromise = null;
       const r = await fetch(mspzUrl, { signal: this._abortCtrl.signal });
