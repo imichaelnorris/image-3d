@@ -46,6 +46,7 @@ Steps:
 | `width` / `height` | Explicit pixel dimensions. Overrides the default 600px / 80vh caps. Bare numbers are interpreted as px; full CSS values (`50%`, `40vw`) work too. |
 | `loading="lazy"` | Defer the fetch until the element scrolls near the viewport. |
 | `nobrand` | Hide the "mukba.ng" attribution pill in the bottom-right corner. |
+| `nosway` | Disable the intro sway animation. By default the model rotates ~8° left-right once over 1.8s after the splat finishes loading, decaying to center. Add this attribute to keep the model still. |
 
 ## CSS custom properties
 

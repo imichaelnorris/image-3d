@@ -698,6 +698,7 @@
     disconnectedCallback() {
       if (this._observer) { this._observer.disconnect(); this._observer = null; }
       if (this._abortCtrl) { this._abortCtrl.abort(); this._abortCtrl = null; }
+      if (this._swayRaf) { cancelAnimationFrame(this._swayRaf); this._swayRaf = null; }
       // Note: MspzImageViewer doesn't expose a teardown today. Re-attach will
       // create a fresh instance; we accept some leakage on disconnect for v1.
     }
@@ -839,6 +840,7 @@
         this._loaded = true;
         this.setAttribute('data-state', 'ready');
         this._emit('image-3d:ready', {});
+        this._maybePlayIntroSway();
       } catch (err) {
         this.setAttribute('data-state', 'error');
         this._emit('image-3d:error', { error: err });
@@ -848,6 +850,63 @@
       } finally {
         this._loading = false;
       }
+    }
+
+    // Intro sway: rotates the model left-right around the yaw axis once
+    // the splat is ready, then settles back to center. On by default; opt
+    // out per-embed by adding the `nosway` attribute to the tag:
+    //
+    //   <image-3d src="..." nosway></image-3d>
+    //
+    // URL params can override amplitude/duration for in-page tuning. They
+    // also accept `image3d_sway=0` as a page-wide disable for testing
+    // without editing markup:
+    //
+    //   ?image3d_sway=0           disable for the whole page
+    //   ?image3d_sway_deg=N       peak yaw, degrees (default 8)
+    //   ?image3d_sway_ms=N        total animation time, ms; one full sine
+    //                             cycle center→right→center→left→center
+    //                             (default 1800)
+    //   ?image3d_sway_mode=decay  amplitude decays to 0 over duration (default)
+    //   ?image3d_sway_mode=steady amplitude stays constant for the duration
+    //
+    // Stops on first pointerdown on the viewer so user interaction always
+    // wins. Requires the viewer's MODEL_ROTATION code path (the default —
+    // disabled by ?orbit), since we drive _yaw and call _applyModelRotation.
+    _maybePlayIntroSway() {
+      if (this.hasAttribute('nosway')) return;
+      const viewer = this._viewer;
+      if (!viewer || typeof viewer._applyModelRotation !== 'function') return;
+      let params = null;
+      try { params = new URLSearchParams(location.search); } catch (_) {}
+      if (params && params.get('image3d_sway') === '0') return;
+      const deg = parseFloat((params && params.get('image3d_sway_deg')) || '8');
+      const ms = parseFloat((params && params.get('image3d_sway_ms')) || '1800');
+      if (!isFinite(deg) || !isFinite(ms) || ms <= 0) return;
+      const steady = !!(params && params.get('image3d_sway_mode') === 'steady');
+      const amplitude = deg * Math.PI / 180;
+      const start = performance.now();
+      const stop = () => {
+        if (this._swayRaf) { cancelAnimationFrame(this._swayRaf); this._swayRaf = null; }
+        if (this._swayPointerStop) {
+          this._viewerRoot?.removeEventListener('pointerdown', this._swayPointerStop, true);
+          this._swayPointerStop = null;
+        }
+        viewer._yaw = 0;
+        viewer._applyModelRotation();
+      };
+      this._swayPointerStop = stop;
+      this._viewerRoot?.addEventListener('pointerdown', stop, true);
+      const tick = (now) => {
+        const elapsed = now - start;
+        if (elapsed >= ms) { stop(); return; }
+        const t = elapsed / ms;
+        const env = steady ? 1 : (1 - t);
+        viewer._yaw = amplitude * Math.sin(t * 2 * Math.PI) * env;
+        viewer._applyModelRotation();
+        this._swayRaf = requestAnimationFrame(tick);
+      };
+      this._swayRaf = requestAnimationFrame(tick);
     }
 
     async _renderMeshPreview(previewUrl) {
