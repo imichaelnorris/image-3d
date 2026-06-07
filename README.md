@@ -2,81 +2,77 @@
 
 [<img alt="mukba.ng" src="https://mukba.ng/assets/image-3d-badge.svg" height="28">](https://mukba.ng/?ref=image-3d-embed)
 
-A drop-in web component that turns a 2D image URL into an interactive 3D embed. Drag to rotate, pinch to zoom.
+A drop-in web component that turns a photo into an interactive 3D Gaussian splat. Drag to rotate, pinch to zoom.
 
 [**Live demo & docs →**](https://mukba.ng/image-3d/docs/)
 
-## Install
+> **Cloud inference is currently disabled.** Use [`local` mode](#local-mode-in-browser-inference) to run depth estimation in the browser instead.
 
-Drop these two lines into any HTML page:
+## Install
 
 ```html
 <script src="https://mukba.ng/image-3d/embed.js" defer></script>
-<image-3d src="/your-photo.jpg"></image-3d>
 ```
 
-The `mukba.ng` worker fetches the image, generates the 3D artifacts (mesh preview + gaussian splat), and the client crossfades from poster → mesh → splat as each piece loads.
+## Local mode (in-browser inference)
 
-## Add it with Claude Code
+Runs fully client-side — no server involved. Uses [Depth Anything V2 Small](https://huggingface.co/onnx-community/depth-anything-v2-small) to estimate depth in the browser and renders the result as an MSPZ v4 Gaussian splat.
 
-Paste this prompt into [Claude Code](https://claude.com/claude-code) in your project directory:
+```html
+<!-- Drop zone: user picks a photo -->
+<image-3d local></image-3d>
 
+<!-- Auto-infer on load -->
+<image-3d local src="/photo.jpg"></image-3d>
+
+<!-- Load a pre-generated MSPZ, no inference -->
+<image-3d local model="/model.mspz"></image-3d>
 ```
-Add the <image-3d> web component to this project.
 
-Reference docs: https://mukba.ng/image-3d/docs/
+### `local src="photo.jpg"` ⚠️ resource-intensive
 
-Steps:
-1. Add this script tag once, in the <head> of the main HTML template
-   (or shared layout):
-   <script src="https://mukba.ng/image-3d/embed.js" defer></script>
-2. Then ask me which photo I want to convert. To swap one, replace its
-   <img> with:
-     <image-3d src="/same/photo/url.jpg"></image-3d>
-   It's a standard custom element — no wrapper needed in React/Vue/
-   Svelte/etc.
-3. Show me the diff before committing.
-```
+Runs inference automatically when the element loads.
+
+- Downloads a ~30 MB int8-quantized ONNX model on first visit (cached after that)
+- Expands to **~1 GB RAM** at runtime during inference
+- Takes a few seconds on fast hardware (Apple Silicon, modern GPU); slower devices may take 10–30s
+- The model is a singleton — multiple `local` elements on the same page share one instance
+
+If you have a pre-generated splat, use `local model="..."` instead.
 
 ## Attributes
 
 | Attribute | Description |
 |---|---|
-| `src` *(required)* | Source image URL. The mukba.ng worker fetches this and generates the 3D artifacts. |
-| `width` / `height` | Explicit pixel dimensions. Overrides the default 600px / 80vh caps. Bare numbers are interpreted as px; full CSS values (`50%`, `40vw`) work too. |
-| `loading="lazy"` | Defer the fetch until the element scrolls near the viewport. |
-| `nobrand` | Hide the "mukba.ng" attribution pill in the bottom-right corner. |
-| `nosway` | Disable the intro sway animation. By default the model rotates ~8° left-right once over 1.8s after the splat finishes loading, decaying to center. Add this attribute to keep the model still. |
+| `local` | Enable in-browser inference mode (see above). |
+| `local model="file.mspz"` | Load a pre-generated MSPZ directly. No inference. |
+| `local src="photo.jpg"` | Auto-run inference on this photo on load. ⚠️ See above. |
+| `width` / `height` | Explicit dimensions. Bare numbers → px; CSS values (`50%`, `40vw`) work too. |
+| `nobrand` | Hide the mukba.ng attribution pill. |
+| `nosway` | Disable the intro rotation animation. |
 
 ## CSS custom properties
 
-The element uses shadow DOM, so the host page's CSS can't bleed in. Set these on the host element to restyle.
-
 | Property | Default | Notes |
 |---|---|---|
-| `--image-3d-max-width` | `600px` | Hard cap on rendered width. |
-| `--image-3d-max-height` | `80vh` | Hard cap on poster height (and thus overall height). |
-| `--image-3d-radius` | `8px` | Host corner radius. Set `0` for sharp. |
-| `--image-3d-width` / `--image-3d-height` | `auto` | Set by the corresponding attributes; you can also set these directly via CSS. |
+| `--image-3d-max-width` | `600px` | Cap on rendered width. |
+| `--image-3d-max-height` | `80vh` | Cap on height. |
+| `--image-3d-radius` | `8px` | Corner radius. `0` for sharp. |
+| `--image-3d-width` / `--image-3d-height` | `auto` | Also settable via `width`/`height` attributes. |
 
 ## Lifecycle events
-
-The element dispatches `CustomEvent`s on itself. Listen the way you would on any DOM element.
 
 ```js
 const el = document.querySelector('image-3d');
 el.addEventListener('image-3d:loading',  (e) => console.log('start'));
-el.addEventListener('image-3d:progress', (e) => console.log('progress', e.detail));
 el.addEventListener('image-3d:ready',    ()  => console.log('ready'));
 el.addEventListener('image-3d:error',    (e) => console.warn('error', e.detail.error));
 ```
 
 ## Behavior notes
 
-- **Mesh first, splat second.** The small mesh preview (~11KB) paints almost immediately; the larger splat crossfades over once it loads.
-- **Long-press to reset.** Press and hold without dragging for a blue scrim; release to recenter the camera. Pinch / scroll to zoom; drag to orbit.
-- **Shadow DOM.** Nothing on the host page can override the embed's internal styling unless you use the documented CSS custom properties.
-- **Graceful failure.** If the worker fails or returns garbage, the poster image stays visible and an `image-3d:error` event fires. The user always sees something.
+- **Shadow DOM.** Use the documented CSS custom properties to restyle; host-page CSS can't bleed in.
+- **Long-press to reset.** Hold without dragging → blue scrim; release to recenter. Pinch/scroll to zoom; drag to orbit.
 
 ---
 

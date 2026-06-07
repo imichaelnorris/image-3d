@@ -653,6 +653,66 @@
       inset: 0;
       background: linear-gradient(rgba(0,0,0,0.0), rgba(0,0,0,0.25));
     }
+
+    /* ── Local mode (in-browser depth estimation) ─────────────────── */
+    .local-root {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .local-root.active { display: flex; }
+    .local-drop {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: 2px dashed #333;
+      border-radius: inherit;
+      background: #111;
+      cursor: pointer;
+      transition: border-color 150ms, background 150ms;
+    }
+    .local-drop.drag-over { border-color: #555; background: #1a1a1a; }
+    .local-drop.hidden { display: none; }
+    .local-drop-icon  { font-size: 32px; opacity: 0.4; }
+    .local-drop-label { font-size: 13px; color: #666; }
+    .local-drop-label strong { color: #999; }
+    .local-drop input { display: none; }
+    .local-status {
+      position: absolute;
+      bottom: 12px;
+      left: 0; right: 0;
+      text-align: center;
+      font-size: 11px;
+      color: #555;
+      pointer-events: none;
+    }
+    .local-spinner {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+    .local-spinner.active { display: flex; }
+    .local-spinner-ring {
+      width: 28px; height: 28px;
+      border: 2px solid #2a2a2a;
+      border-top-color: #4a7aff;
+      border-radius: 50%;
+      animation: local-spin 0.75s linear infinite;
+    }
+    @keyframes local-spin { to { transform: rotate(360deg); } }
+    .local-spinner-label { font-size: 12px; color: #555; }
   `;
 
   class ImageThreeD extends HTMLElement {
@@ -769,9 +829,13 @@
       brand.appendChild(brandIcon);
       brand.appendChild(brandText);
 
+      const localRoot = document.createElement('div');
+      localRoot.className = 'local-root';
+
       stack.appendChild(poster);
       stack.appendChild(viewerRoot);
       stack.appendChild(glbRoot);
+      stack.appendChild(localRoot);
       stack.appendChild(indicator);
       stack.appendChild(longPress);
       stack.appendChild(rotateHint);
@@ -781,6 +845,7 @@
       this._posterEl = poster;
       this._viewerRoot = viewerRoot;
       this._glbRoot = glbRoot;
+      this._localRoot = localRoot;
       this._progressFill = fill;
       this._longPressOverlay = longPress;
       this._rotateHintOverlay = rotateHint;
@@ -820,19 +885,32 @@
     async _kickoff() {
       if (this._loaded || this._loading) return;
       window.image3dLog?.phase('_kickoff');
-      // mspz-src is an escape hatch for testing — points directly at a
-      // pre-generated MSPZ, bypasses the worker + mesh-preview pipeline.
+
+      const local   = this.hasAttribute('local');
+      const model   = this.getAttribute('model');
       const explicit = this.getAttribute('mspz-src');
-      const src = this.getAttribute('src');
-      if (!explicit && !src) {
+      const src      = this.getAttribute('src');
+
+      // [local] without [model] or [src]: interactive drop-zone mode.
+      // Don't complete the normal kickoff — leave lifecycle open for the user.
+      if (local && !model && !src) {
+        this.setAttribute('data-state', 'local');
+        this._setupLocalMode();
+        return;
+      }
+
+      if (!local && !explicit && !src) {
         this._emit('image-3d:error', { error: new Error('missing src') });
         return;
       }
+
       this._loading = true;
       this.setAttribute('data-state', 'loading');
-      this._emit('image-3d:loading', { src: explicit || src });
+      this._emit('image-3d:loading', { src: model || explicit || src });
       try {
-        if (explicit) {
+        if (local && model) {
+          await this._loadDirectMspz(new URL(model, document.baseURI).href);
+        } else if (explicit) {
           await this._loadDirectMspz(explicit);
         } else {
           await this._loadAndRender(src);
@@ -844,8 +922,6 @@
       } catch (err) {
         this.setAttribute('data-state', 'error');
         this._emit('image-3d:error', { error: err });
-        // Always log — silent failures are worse than the noise. Embedders
-        // can suppress by listening for image-3d:error and calling preventDefault.
         console.warn('[image-3d]', err);
       } finally {
         this._loading = false;
@@ -1076,6 +1152,95 @@
         await new Promise((r) => requestAnimationFrame(r));
         this._glbState.stop();
         this._glbState = null;
+      }
+    }
+
+    _setupLocalMode() {
+      const root  = this._localRoot;
+      root.innerHTML = '';
+      root.classList.add('active');
+
+      const drop = document.createElement('div');
+      drop.className = 'local-drop';
+      drop.innerHTML = `
+        <div class="local-drop-icon">🖼</div>
+        <div class="local-drop-label"><strong>Drop a photo</strong> or click</div>
+        <input type="file" accept="image/*" />
+      `;
+      const input = drop.querySelector('input');
+
+      const spinner = document.createElement('div');
+      spinner.className = 'local-spinner';
+      spinner.innerHTML = `
+        <div class="local-spinner-ring"></div>
+        <span class="local-spinner-label">Estimating depth…</span>
+      `;
+      const spinnerLabel = spinner.querySelector('.local-spinner-label');
+
+      const status = document.createElement('div');
+      status.className = 'local-status';
+
+      root.appendChild(drop);
+      root.appendChild(spinner);
+      root.appendChild(status);
+
+      let lastDepthMs = null;
+      const ms = t => t < 1000 ? `${Math.round(t)}ms` : `${(t/1000).toFixed(1)}s`;
+
+      const handleFile = async (file) => {
+        if (!file || !file.type.startsWith('image/')) return;
+        drop.classList.add('hidden');
+        spinner.classList.add('active');
+        const label = lastDepthMs ? `Estimating depth… ~${ms(lastDepthMs)}` : 'Estimating depth…';
+        spinnerLabel.textContent = label;
+        status.textContent = '';
+        try {
+          const { encodePhotoToMspz } = await import(new URL('./local-depth.js', import.meta.url).href);
+          const t0 = performance.now();
+          const { mspzBytes, imgW, imgH } = await encodePhotoToMspz(file, 512, (p) => {
+            if (p.status === 'downloading' || p.status === 'loading') {
+              spinnerLabel.textContent = `Loading model… ${p.progress != null ? Math.round(p.progress) + '%' : ''}`;
+            }
+          });
+          lastDepthMs = performance.now() - t0;
+          spinner.classList.remove('active');
+          this.style.setProperty('--image-3d-aspect-ratio', `${imgW} / ${imgH}`);
+          const blob = new Blob([mspzBytes]);
+          const url  = URL.createObjectURL(blob);
+          this._loading = true;
+          try {
+            await this._loadDirectMspz(url);
+            this._loaded = true;
+            this.setAttribute('data-state', 'ready');
+            root.classList.remove('active');
+            this._emit('image-3d:ready', {});
+            this._maybePlayIntroSway();
+          } finally {
+            URL.revokeObjectURL(url);
+            this._loading = false;
+          }
+        } catch (err) {
+          spinner.classList.remove('active');
+          drop.classList.remove('hidden');
+          status.textContent = 'Error: ' + err.message;
+          console.warn('[image-3d local]', err);
+        }
+      };
+
+      drop.addEventListener('click', () => input.click());
+      input.addEventListener('change', () => handleFile(input.files[0]));
+      drop.addEventListener('dragover',  (e) => { e.preventDefault(); drop.classList.add('drag-over'); });
+      drop.addEventListener('dragleave', ()  => drop.classList.remove('drag-over'));
+      drop.addEventListener('drop', (e) => {
+        e.preventDefault();
+        drop.classList.remove('drag-over');
+        handleFile(e.dataTransfer.files[0]);
+      });
+
+      // [local src="photo.jpg"] auto-starts inference on that photo.
+      const autoSrc = this.getAttribute('src');
+      if (autoSrc) {
+        fetch(autoSrc).then(r => r.blob()).then(blob => handleFile(new File([blob], 'photo', { type: blob.type })));
       }
     }
 
