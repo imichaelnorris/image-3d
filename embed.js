@@ -522,7 +522,7 @@
     /* When the model is fully loaded the poster fades out entirely. */
     :host([data-state="ready"]) .poster { opacity: 0; }
     /* Drop-zone state: compact height so the empty box doesn't loom. */
-    :host([data-state="local"]) { aspect-ratio: var(--image-3d-aspect-ratio, 5 / 2); }
+    :host([data-state="local"]) { aspect-ratio: var(--image-3d-aspect-ratio, 4 / 3); }
     .viewer-root canvas { display: block; width: 100% !important; height: 100% !important; }
 
     /* Long-press overlay — blue tint that fades in when the user holds
@@ -674,7 +674,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 8px;
+      gap: 14px;
       border: 2px dashed #333;
       border-radius: inherit;
       background: #111;
@@ -683,7 +683,7 @@
     }
     .local-drop.drag-over { border-color: #555; background: #1a1a1a; }
     .local-drop.hidden { display: none; }
-    .local-drop-icon  { font-size: 32px; opacity: 0.4; }
+    .local-drop-icon  { font-size: 44px; opacity: 0.35; line-height: 1; }
     .local-drop-label { font-size: 13px; color: #666; }
     .local-drop-label strong { color: #999; }
     .local-drop input { display: none; }
