@@ -521,6 +521,8 @@
     :host([data-state="ready"]) .glb-root { opacity: 0; pointer-events: none; }
     /* When the model is fully loaded the poster fades out entirely. */
     :host([data-state="ready"]) .poster { opacity: 0; }
+    /* Drop-zone state: compact height so the empty box doesn't loom. */
+    :host([data-state="local"]) { aspect-ratio: var(--image-3d-aspect-ratio, 5 / 2); }
     .viewer-root canvas { display: block; width: 100% !important; height: 100% !important; }
 
     /* Long-press overlay — blue tint that fades in when the user holds
