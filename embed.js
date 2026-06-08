@@ -1277,6 +1277,24 @@
       this._glbRenderPromise = null;
       const r = await fetch(mspzUrl, { signal: this._abortCtrl.signal });
       if (!r.ok) throw new Error(`mspz-src fetch failed: ${r.status}`);
+
+      // Auto-detect gzip-wrapped MSPZ (produced by the browser encoder) and
+      // decompress transparently so downloaded files load correctly too.
+      // r.clone() lets us peek the full bytes while keeping r intact.
+      let effectiveUrl = mspzUrl;
+      let effectiveR   = r;
+      let tempBlobUrl  = null;
+      const peekBuf = new Uint8Array(await r.clone().arrayBuffer());
+      if (peekBuf[0] === 0x1F && peekBuf[1] === 0x8B) {
+        const rawBytes = await new Response(
+          new Blob([peekBuf]).stream().pipeThrough(new DecompressionStream('gzip'))
+        ).arrayBuffer();
+        const rawBlob = new Blob([rawBytes]);
+        tempBlobUrl  = URL.createObjectURL(rawBlob);
+        effectiveUrl = tempBlobUrl;
+        effectiveR   = await fetch(effectiveUrl, { signal: this._abortCtrl.signal });
+      }
+
       const viewerModuleUrl = this.getAttribute('viewer-module') || null;
       const [, gs3d, viewerMod] = await Promise.all([
         loadFzstd(), loadGS3D(), loadViewerModule(viewerModuleUrl),
@@ -1285,7 +1303,7 @@
       const { MspzImageViewer } = viewerMod;
       const viewer = new MspzImageViewer({
         rootElement: this._viewerRoot,
-        modelId: this._stableModelId(mspzUrl),
+        modelId: this._stableModelId(effectiveUrl),
         clip: false,
         longPressOverlay: this._longPressOverlay,
         rotateHintOverlay: this._rotateHintOverlay,
@@ -1296,9 +1314,10 @@
         onError: (err) => this._emit('image-3d:error', { error: err }),
       });
       this._viewer = viewer;
-      await this._readMspzAspectFromHeader(r);
+      await this._readMspzAspectFromHeader(effectiveR);
       await viewer.init(gs3d);
-      await viewer.loadMspz(mspzUrl, null, { preFetched: Promise.resolve(r) });
+      await viewer.loadMspz(effectiveUrl, null, { preFetched: Promise.resolve(effectiveR) });
+      if (tempBlobUrl) URL.revokeObjectURL(tempBlobUrl);
     }
 
 

@@ -312,6 +312,13 @@ function _encodeMspz({ positions, shColors, logScales }, imgW, imgH, gW, gH) {
   return out;
 }
 
+// ── Gzip helper (browser native — no external dep) ───────────────────────────
+
+async function _gzipBytes(bytes) {
+  const gz = new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(gz).arrayBuffer());
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function encodePhotoToSplat(file, grid = 512, onProgress) {
@@ -338,13 +345,14 @@ export async function encodePhotoToSplat(file, grid = 512, onProgress) {
     ctx.drawImage(img, 0, 0, grid, grid);
     const photoGrid = ctx.getImageData(0, 0, grid, grid);
 
-    const splat     = _computeSplat(result.depth, photoGrid, imgW, imgH, grid, grid);
-    const mspzBytes = _encodeMspz(splat, imgW, imgH, grid, grid);
-    const plyBytes  = generatePly(splat);
-    const spzBytes  = await generateSpz(splat);
-    const buildMs   = performance.now() - t0Build;
+    const splat      = _computeSplat(result.depth, photoGrid, imgW, imgH, grid, grid);
+    const mspzBytes  = _encodeMspz(splat, imgW, imgH, grid, grid);
+    const mspzGzBytes = await _gzipBytes(mspzBytes);
+    const plyBytes   = generatePly(splat);
+    const spzBytes   = await generateSpz(splat);
+    const buildMs    = performance.now() - t0Build;
 
-    return { mspzBytes, plyBytes, spzBytes, imgW, imgH, depthMs, buildMs };
+    return { mspzBytes, mspzGzBytes, plyBytes, spzBytes, imgW, imgH, depthMs, buildMs };
   } finally {
     URL.revokeObjectURL(blobUrl);
   }
