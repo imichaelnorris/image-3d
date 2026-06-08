@@ -41,10 +41,11 @@ If you have a pre-generated splat, use `model="..."` instead.
 | Attribute | Description |
 |---|---|
 | `src="photo.jpg"` | Auto-run inference on this photo on load. ⚠️ See above. |
-| `model="file.mspz"` | Load a pre-generated MSPZ directly. No inference. |
+| `model="file.mspz"` | Load a pre-generated MSPZ directly. No inference, no model download. |
 | `width` / `height` | Explicit dimensions. Bare numbers → px; CSS values (`50%`, `40vw`) work too. |
 | `nobrand` | Hide the mukba.ng attribution pill. |
 | `nosway` | Disable the intro rotation animation. |
+| `no-download` | Hide the download button. |
 
 ## CSS custom properties
 
@@ -60,14 +61,18 @@ If you have a pre-generated splat, use `model="..."` instead.
 ```js
 const el = document.querySelector('image-3d');
 el.addEventListener('image-3d:loading',  (e) => console.log('start'));
+el.addEventListener('image-3d:progress', (e) => console.log('progress', e.detail));
 el.addEventListener('image-3d:ready',    ()  => console.log('ready'));
 el.addEventListener('image-3d:error',    (e) => console.warn('error', e.detail.error));
 ```
 
 ## Behavior notes
 
+- **Controls.** Drag to orbit, pinch or scroll to zoom.
+- **Long-press to reset.** Hold without dragging → blue scrim; release to recenter the camera.
 - **Shadow DOM.** Use the documented CSS custom properties to restyle; host-page CSS can't bleed in.
-- **Long-press to reset.** Hold without dragging → blue scrim; release to recenter. Pinch/scroll to zoom; drag to orbit.
+- **Singleton model.** The depth model is shared across all `<image-3d>` elements on the page — downloaded once, loaded once.
+- **Graceful failure.** If inference fails, an `image-3d:error` event fires. The drop zone stays interactive so the user can try again.
 
 ---
 
