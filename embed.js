@@ -1198,7 +1198,10 @@
         spinnerLabel.textContent = label;
         status.textContent = '';
         try {
-          const { encodePhotoToMspz } = await import(new URL('./local-depth.js', import.meta.url).href);
+          const localDepthUrl = EMBED_DIR
+            ? new URL('local-depth.js', EMBED_DIR).href
+            : 'https://mukba.ng/image-3d/local-depth.js';
+          const { encodePhotoToMspz } = await import(localDepthUrl);
           const t0 = performance.now();
           const { mspzBytes, imgW, imgH } = await encodePhotoToMspz(file, 512, (p) => {
             if (p.status === 'downloading' || p.status === 'loading') {
