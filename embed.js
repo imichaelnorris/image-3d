@@ -609,6 +609,7 @@
       border-radius: 4px;
     }
     :host([nobrand]) .brand-footer { display: none; }
+    :host([data-state="local"]) .brand-footer { display: none; }
 
     /* Built-in loading UI. Embedders can hide it via attribute or override
        slot if they want custom progress chrome. */
