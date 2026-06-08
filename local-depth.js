@@ -3,8 +3,9 @@
  * Exports:
  *   getDepthPipeline(onProgress)   → pipeline singleton
  *   encodePhotoToMspz(file, grid)  → { mspzBytes, imgW, imgH }
- *   encodePhotoToSplat(file, grid) → { mspzBytes, plyBytes, imgW, imgH, depthMs, buildMs }
+ *   encodePhotoToSplat(file, grid) → { mspzBytes, plyBytes, spzBytes, imgW, imgH, depthMs, buildMs }
  *   generatePly(splat)             → Uint8Array (3DGS PLY, binary little-endian)
+ *   generateSpz(splat)             → Promise<Uint8Array> (Scaniverse SPZ, gzip-compressed)
  */
 
 const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/transformers.min.js';
@@ -139,6 +140,63 @@ export function generatePly({ positions, shColors, opacities, logScales }) {
   out.set(headerBytes);
   out.set(dataBytes, headerBytes.length);
   return out;
+}
+
+// ── SPZ encoder (Scaniverse format, gzip-compressed) ─────────────────────────
+
+export async function generateSpz({ positions, shColors, opacities, logScales }) {
+  const N = positions.length / 3;
+  const fractionalBits = 12;
+  const FSCALE = 1 << fractionalBits;
+
+  // Planar layout (before gzip): positions (9B/pt), alphas, colors (3B/pt), scales (3B/pt), rots (3B/pt)
+  const posArr   = new Uint8Array(N * 9);
+  const alphaArr = new Uint8Array(N);
+  const colorArr = new Uint8Array(N * 3);
+  const scaleArr = new Uint8Array(N * 3);
+  const rotArr   = new Uint8Array(N * 3);
+
+  for (let i = 0; i < N; i++) {
+    for (let ax = 0; ax < 3; ax++) {
+      let v = Math.round(positions[i * 3 + ax] * FSCALE);
+      v = Math.max(-8388608, Math.min(8388607, v));
+      const uv = v < 0 ? (v + 0x1000000) : v;
+      posArr[i * 9 + ax * 3]     =  uv        & 0xFF;
+      posArr[i * 9 + ax * 3 + 1] = (uv >>  8) & 0xFF;
+      posArr[i * 9 + ax * 3 + 2] = (uv >> 16) & 0xFF;
+    }
+    alphaArr[i] = Math.min(255, Math.max(0, Math.round(1 / (1 + Math.exp(-opacities[i])) * 255)));
+    for (let ci = 0; ci < 3; ci++) {
+      colorArr[i * 3 + ci] = Math.min(255, Math.max(0,
+        Math.round(shColors[i * 3 + ci] * COLOR_SCALE * 255 + 127.5)
+      ));
+    }
+    const sb = Math.min(255, Math.max(0, Math.round((logScales[i] + 10) * 16)));
+    scaleArr[i * 3] = scaleArr[i * 3 + 1] = scaleArr[i * 3 + 2] = sb;
+    rotArr[i * 3] = rotArr[i * 3 + 1] = rotArr[i * 3 + 2] = 128; // identity quat xyz→0
+  }
+
+  const hdr = new Uint8Array(16);
+  const hdv = new DataView(hdr.buffer);
+  hdr[0] = 0x73; hdr[1] = 0x70; hdr[2] = 0x7A; hdr[3] = 0x00; // "spz\0"
+  hdv.setUint32(4, 1, true);   // version
+  hdv.setUint32(8, N, true);   // numPoints
+  hdr[12] = 0;                  // shDegree (DC only)
+  hdr[13] = fractionalBits;
+  hdr[14] = 0;                  // flags
+  hdr[15] = 0;                  // reserved
+
+  const raw = new Uint8Array(16 + N * 19);
+  let off = 0;
+  raw.set(hdr, off);      off += 16;
+  raw.set(posArr, off);   off += N * 9;
+  raw.set(alphaArr, off); off += N;
+  raw.set(colorArr, off); off += N * 3;
+  raw.set(scaleArr, off); off += N * 3;
+  raw.set(rotArr, off);
+
+  const gz = new Blob([raw]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(gz).arrayBuffer());
 }
 
 // ── MSPZ v4 encoder ───────────────────────────────────────────────────────────
@@ -283,9 +341,10 @@ export async function encodePhotoToSplat(file, grid = 512, onProgress) {
     const splat     = _computeSplat(result.depth, photoGrid, imgW, imgH, grid, grid);
     const mspzBytes = _encodeMspz(splat, imgW, imgH, grid, grid);
     const plyBytes  = generatePly(splat);
+    const spzBytes  = await generateSpz(splat);
     const buildMs   = performance.now() - t0Build;
 
-    return { mspzBytes, plyBytes, imgW, imgH, depthMs, buildMs };
+    return { mspzBytes, plyBytes, spzBytes, imgW, imgH, depthMs, buildMs };
   } finally {
     URL.revokeObjectURL(blobUrl);
   }
