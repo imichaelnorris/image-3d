@@ -889,46 +889,64 @@
       if (this._loaded || this._loading) return;
       window.image3dLog?.phase('_kickoff');
 
-      const local   = this.hasAttribute('local');
-      const model   = this.getAttribute('model');
+      const cloud    = this.hasAttribute('cloud');
+      const model    = this.getAttribute('model');
       const explicit = this.getAttribute('mspz-src');
       const src      = this.getAttribute('src');
 
-      // [local] without [model] or [src]: interactive drop-zone mode.
-      // Don't complete the normal kickoff — leave lifecycle open for the user.
-      if (local && !model && !src) {
-        this.setAttribute('data-state', 'local');
-        this._setupLocalMode();
-        return;
-      }
-
-      if (!local && !explicit && !src) {
-        this._emit('image-3d:error', { error: new Error('missing src') });
-        return;
-      }
-
-      this._loading = true;
-      this.setAttribute('data-state', 'loading');
-      this._emit('image-3d:loading', { src: model || explicit || src });
-      try {
-        if (local && model) {
-          await this._loadDirectMspz(new URL(model, document.baseURI).href);
-        } else if (explicit) {
-          await this._loadDirectMspz(explicit);
-        } else {
-          await this._loadAndRender(src);
-        }
-        this._loaded = true;
-        this.setAttribute('data-state', 'ready');
-        this._emit('image-3d:ready', {});
-        this._maybePlayIntroSway();
-      } catch (err) {
+      // Cloud inference is not currently enabled.
+      if (cloud) {
+        console.warn('[image-3d] Cloud inference is not currently enabled. Remove the `cloud` attribute to use local in-browser inference.');
         this.setAttribute('data-state', 'error');
-        this._emit('image-3d:error', { error: err });
-        console.warn('[image-3d]', err);
-      } finally {
-        this._loading = false;
+        this._emit('image-3d:error', { error: new Error('cloud inference not enabled') });
+        return;
       }
+
+      // Pre-generated MSPZ (blob URL or file URL).
+      if (explicit) {
+        this._loading = true;
+        this.setAttribute('data-state', 'loading');
+        this._emit('image-3d:loading', { src: explicit });
+        try {
+          await this._loadDirectMspz(explicit);
+          this._loaded = true;
+          this.setAttribute('data-state', 'ready');
+          this._emit('image-3d:ready', {});
+          this._maybePlayIntroSway();
+        } catch (err) {
+          this.setAttribute('data-state', 'error');
+          this._emit('image-3d:error', { error: err });
+          console.warn('[image-3d]', err);
+        } finally {
+          this._loading = false;
+        }
+        return;
+      }
+
+      // Pre-generated MSPZ file path.
+      if (model) {
+        this._loading = true;
+        this.setAttribute('data-state', 'loading');
+        this._emit('image-3d:loading', { src: model });
+        try {
+          await this._loadDirectMspz(new URL(model, document.baseURI).href);
+          this._loaded = true;
+          this.setAttribute('data-state', 'ready');
+          this._emit('image-3d:ready', {});
+          this._maybePlayIntroSway();
+        } catch (err) {
+          this.setAttribute('data-state', 'error');
+          this._emit('image-3d:error', { error: err });
+          console.warn('[image-3d]', err);
+        } finally {
+          this._loading = false;
+        }
+        return;
+      }
+
+      // Default: local in-browser inference (drop zone or auto-infer from src).
+      this.setAttribute('data-state', 'local');
+      this._setupLocalMode();
     }
 
     // Intro sway: rotates the model left-right around the yaw axis once

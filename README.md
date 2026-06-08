@@ -2,11 +2,9 @@
 
 [<img alt="mukba.ng" src="https://mukba.ng/assets/image-3d-badge.svg" height="28">](https://mukba.ng/?ref=image-3d-embed)
 
-A drop-in web component that turns a photo into an interactive 3D Gaussian splat. Drag to rotate, pinch to zoom.
+A drop-in web component that turns a photo into an interactive 3D Gaussian splat. Drag to rotate, pinch to zoom. Runs entirely in the browser — no server required.
 
 [**Live demo & docs →**](https://mukba.ng/image-3d/docs/)
-
-> **Cloud inference is currently disabled.** Use [`local` mode](#local-mode-in-browser-inference) to run depth estimation in the browser instead.
 
 ## Install
 
@@ -14,39 +12,36 @@ A drop-in web component that turns a photo into an interactive 3D Gaussian splat
 <script src="https://mukba.ng/image-3d/embed.js" defer></script>
 ```
 
-## Local mode (in-browser inference)
-
-Runs fully client-side — no server involved. Uses [Depth Anything V2 Small](https://huggingface.co/onnx-community/depth-anything-v2-small) to estimate depth in the browser and renders the result as an MSPZ v4 Gaussian splat.
+## Usage
 
 ```html
 <!-- Drop zone: user picks a photo -->
-<image-3d local></image-3d>
+<image-3d></image-3d>
 
 <!-- Auto-infer on load -->
-<image-3d local src="/photo.jpg"></image-3d>
+<image-3d src="/photo.jpg"></image-3d>
 
 <!-- Load a pre-generated MSPZ, no inference -->
-<image-3d local model="/model.mspz"></image-3d>
+<image-3d model="/model.mspz"></image-3d>
 ```
 
-### `local src="photo.jpg"` ⚠️ resource-intensive
+### `src="photo.jpg"` ⚠️ resource-intensive
 
-Runs inference automatically when the element loads.
+Runs depth estimation automatically when the element loads.
 
 - Downloads a ~30 MB int8-quantized ONNX model on first visit (cached after that)
 - Expands to **~1 GB RAM** at runtime during inference
 - Takes a few seconds on fast hardware (Apple Silicon, modern GPU); slower devices may take 10–30s
-- The model is a singleton — multiple `local` elements on the same page share one instance
+- The model is a singleton — multiple elements on the same page share one instance
 
-If you have a pre-generated splat, use `local model="..."` instead.
+If you have a pre-generated splat, use `model="..."` instead.
 
 ## Attributes
 
 | Attribute | Description |
 |---|---|
-| `local` | Enable in-browser inference mode (see above). |
-| `local model="file.mspz"` | Load a pre-generated MSPZ directly. No inference. |
-| `local src="photo.jpg"` | Auto-run inference on this photo on load. ⚠️ See above. |
+| `src="photo.jpg"` | Auto-run inference on this photo on load. ⚠️ See above. |
+| `model="file.mspz"` | Load a pre-generated MSPZ directly. No inference. |
 | `width` / `height` | Explicit dimensions. Bare numbers → px; CSS values (`50%`, `40vw`) work too. |
 | `nobrand` | Hide the mukba.ng attribution pill. |
 | `nosway` | Disable the intro rotation animation. |
