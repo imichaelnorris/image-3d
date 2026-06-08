@@ -1,8 +1,10 @@
 /**
  * local-depth.js — lazy-loaded by embed.js when [local] attribute is present.
- * Provides:
- *   getDepthPipeline(onProgress)  → transformers.js depth-estimation pipeline (singleton)
- *   encodePhotoToMspz(file, grid) → { mspzBytes: Uint8Array, imgW, imgH }
+ * Exports:
+ *   getDepthPipeline(onProgress)   → pipeline singleton
+ *   encodePhotoToMspz(file, grid)  → { mspzBytes, imgW, imgH }
+ *   encodePhotoToSplat(file, grid) → { mspzBytes, plyBytes, imgW, imgH, depthMs, buildMs }
+ *   generatePly(splat)             → Uint8Array (3DGS PLY, binary little-endian)
  */
 
 const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/transformers.min.js';
@@ -33,35 +35,110 @@ export function getDepthPipeline(onProgress) {
   return _pipelinePromise;
 }
 
-// ── Photo → MSPZ bytes ────────────────────────────────────────────────────────
+// ── Float-precision splat data ────────────────────────────────────────────────
 
-export async function encodePhotoToMspz(file, grid = 512, onProgress) {
-  const pipe = await getDepthPipeline(onProgress);
+function _computeSplat(depthMap, photoGrid, imgW, imgH, gW, gH) {
+  const N      = gW * gH;
+  const dW     = depthMap.width, dH = depthMap.height;
+  const depth  = depthMap.data;
+  const photo  = photoGrid.data;
+  const aspect = imgW / imgH;
+  const Z_NEAR = 0.3, Z_FAR = 0.7;
 
-  const blobUrl = URL.createObjectURL(file);
-  try {
-    const img = await new Promise((res, rej) => {
-      const i = new Image();
-      i.onload = () => res(i);
-      i.onerror = rej;
-      i.src = blobUrl;
-    });
-    const imgW = img.naturalWidth, imgH = img.naturalHeight;
+  const positions = new Float32Array(N * 3);
+  const shColors  = new Float32Array(N * 3);  // true SH DC, not quantized
+  const opacities = new Float32Array(N);       // logit
+  const logScales = new Float32Array(N);       // log of world-space scale
 
-    const result   = await pipe(blobUrl);
-    const depthMap = result.depth;
+  for (let row = 0; row < gH; row++) {
+    for (let col = 0; col < gW; col++) {
+      const idx   = row * gW + col;
+      const di    = Math.round(row * (dH - 1) / (gH - 1));
+      const dj    = Math.round(col * (dW - 1) / (gW - 1));
+      const dNorm = depth[Math.min(dH - 1, di) * dW + Math.min(dW - 1, dj)] / 255;
+      const xN    = (col + 0.5) / gW - 0.5;
+      const yN    = (row + 0.5) / gH - 0.5;
+      const zW    = Z_FAR - dNorm * (Z_FAR - Z_NEAR);
 
-    const tmpC = document.createElement('canvas');
-    tmpC.width = grid; tmpC.height = grid;
-    const ctx = tmpC.getContext('2d');
-    ctx.drawImage(img, 0, 0, grid, grid);
-    const photoGrid = ctx.getImageData(0, 0, grid, grid);
+      positions[idx * 3]     = xN * aspect * zW;
+      positions[idx * 3 + 1] = yN * zW;
+      positions[idx * 3 + 2] = zW;
 
-    const mspzBytes = _encode(depthMap, photoGrid, imgW, imgH, grid, grid);
-    return { mspzBytes, imgW, imgH };
-  } finally {
-    URL.revokeObjectURL(blobUrl);
+      const pOff = idx * 4;
+      shColors[idx * 3]     = (photo[pOff]     / 255 - 0.5) / SH_C0;
+      shColors[idx * 3 + 1] = (photo[pOff + 1] / 255 - 0.5) / SH_C0;
+      shColors[idx * 3 + 2] = (photo[pOff + 2] / 255 - 0.5) / SH_C0;
+
+      const a = 252 / 255;
+      opacities[idx] = Math.log(a / (1 - a));  // logit
+
+      const sc = Math.max(1e-10, zW / gH * 1.2);
+      logScales[idx] = Math.log(sc);
+    }
   }
+
+  return { positions, shColors, opacities, logScales };
+}
+
+// ── PLY generator (standard 3DGS binary PLY) ─────────────────────────────────
+
+export function generatePly({ positions, shColors, opacities, logScales }) {
+  const N = positions.length / 3;
+
+  const header = [
+    'ply',
+    'format binary_little_endian 1.0',
+    `element vertex ${N}`,
+    'property float x',
+    'property float y',
+    'property float z',
+    'property float nx',
+    'property float ny',
+    'property float nz',
+    'property float f_dc_0',
+    'property float f_dc_1',
+    'property float f_dc_2',
+    'property float opacity',
+    'property float scale_0',
+    'property float scale_1',
+    'property float scale_2',
+    'property float rot_0',
+    'property float rot_1',
+    'property float rot_2',
+    'property float rot_3',
+    'end_header\n',
+  ].join('\n');
+
+  const headerBytes = new TextEncoder().encode(header);
+  const STRIDE      = 17 * 4;
+  const dataBytes   = new Uint8Array(N * STRIDE);
+  const dv          = new DataView(dataBytes.buffer);
+
+  for (let i = 0; i < N; i++) {
+    const b = i * STRIDE;
+    dv.setFloat32(b,      positions[i * 3],     true);
+    dv.setFloat32(b +  4, positions[i * 3 + 1], true);
+    dv.setFloat32(b +  8, positions[i * 3 + 2], true);
+    dv.setFloat32(b + 12, 0, true);  // nx
+    dv.setFloat32(b + 16, 0, true);  // ny
+    dv.setFloat32(b + 20, 0, true);  // nz
+    dv.setFloat32(b + 24, shColors[i * 3],     true);
+    dv.setFloat32(b + 28, shColors[i * 3 + 1], true);
+    dv.setFloat32(b + 32, shColors[i * 3 + 2], true);
+    dv.setFloat32(b + 36, opacities[i], true);
+    dv.setFloat32(b + 40, logScales[i], true);  // scale_0
+    dv.setFloat32(b + 44, logScales[i], true);  // scale_1
+    dv.setFloat32(b + 48, logScales[i], true);  // scale_2
+    dv.setFloat32(b + 52, 1, true);  // rot_0 (w)
+    dv.setFloat32(b + 56, 0, true);  // rot_1
+    dv.setFloat32(b + 60, 0, true);  // rot_2
+    dv.setFloat32(b + 64, 0, true);  // rot_3
+  }
+
+  const out = new Uint8Array(headerBytes.length + dataBytes.length);
+  out.set(headerBytes);
+  out.set(dataBytes, headerBytes.length);
+  return out;
 }
 
 // ── MSPZ v4 encoder ───────────────────────────────────────────────────────────
@@ -81,13 +158,8 @@ function _rawZstdFrame(data) {
   return out;
 }
 
-function _encode(depthMap, photoGrid, imgW, imgH, gW, gH) {
+function _encodeMspz({ positions, shColors, logScales }, imgW, imgH, gW, gH) {
   const N      = gW * gH;
-  const dW     = depthMap.width, dH = depthMap.height;
-  const depth  = depthMap.data;
-  const photo  = photoGrid.data;
-  const aspect = imgW / imgH;
-  const Z_NEAR = 0.3, Z_FAR = 0.7;
   const FSCALE = 1 << FRACTIONAL_BITS;
 
   const packedPos   = new Uint8Array(N * 9);
@@ -95,39 +167,27 @@ function _encode(depthMap, photoGrid, imgW, imgH, gW, gH) {
   const packedColor = new Uint8Array(N * 3);
   const packedScale = new Uint8Array(N);
 
-  for (let row = 0; row < gH; row++) {
-    for (let col = 0; col < gW; col++) {
-      const idx  = row * gW + col;
-      const di   = Math.round(row * (dH - 1) / (gH - 1));
-      const dj   = Math.round(col * (dW - 1) / (gW - 1));
-      const dNorm = depth[Math.min(dH - 1, di) * dW + Math.min(dW - 1, dj)] / 255;
-      const xN   = (col + 0.5) / gW - 0.5;
-      const yN   = (row + 0.5) / gH - 0.5;
-      const zW   = Z_FAR - dNorm * (Z_FAR - Z_NEAR);
-      const xW   = xN * aspect * zW;
-      const yW   = yN * zW;
-
-      for (const [ax, v] of [[0, xW], [1, yW], [2, zW]]) {
-        const vi = Math.round(v * FSCALE) & 0xFFFFFF;
-        packedPos[idx * 9 + ax * 3]     =  vi        & 0xFF;
-        packedPos[idx * 9 + ax * 3 + 1] = (vi >>  8) & 0xFF;
-        packedPos[idx * 9 + ax * 3 + 2] = (vi >> 16) & 0xFF;
-      }
-
-      packedAlpha[idx] = 252;
-
-      const pOff = idx * 4;
-      for (const [ci, raw] of [[0, photo[pOff]], [1, photo[pOff+1]], [2, photo[pOff+2]]]) {
-        const shDC = (raw / 255 - 0.5) / SH_C0;
-        packedColor[idx * 3 + ci] = Math.min(255, Math.max(0, Math.round(shDC * COLOR_SCALE * 255 + 127.5)));
-      }
-
-      const sc = Math.max(1e-10, zW / gH * 1.2);
-      packedScale[idx] = Math.min(255, Math.max(0, Math.round((Math.log(sc) + 10) * 16)));
+  for (let i = 0; i < N; i++) {
+    for (let ax = 0; ax < 3; ax++) {
+      const vi = Math.round(positions[i * 3 + ax] * FSCALE) & 0xFFFFFF;
+      packedPos[i * 9 + ax * 3]     =  vi        & 0xFF;
+      packedPos[i * 9 + ax * 3 + 1] = (vi >>  8) & 0xFF;
+      packedPos[i * 9 + ax * 3 + 2] = (vi >> 16) & 0xFF;
     }
+
+    packedAlpha[i] = 252;
+
+    for (let ci = 0; ci < 3; ci++) {
+      packedColor[i * 3 + ci] = Math.min(255, Math.max(0,
+        Math.round(shColors[i * 3 + ci] * COLOR_SCALE * 255 + 127.5)
+      ));
+    }
+
+    packedScale[i] = Math.min(255, Math.max(0,
+      Math.round((logScales[i] + 10) * 16)
+    ));
   }
 
-  const BPP      = 14;
   const posAcc   = new Uint8Array(9);
   const colorAcc = new Uint8Array(3);
   let   scaleAcc = 0;
@@ -161,24 +221,26 @@ function _encode(depthMap, photoGrid, imgW, imgH, gW, gH) {
   let cOff = 0;
   for (const f of frames) { compData.set(f, cOff); cOff += f.length; }
 
-  const origSize   = N * BPP;
-  const idxBytes   = new Uint8Array(16);
-  const idv        = new DataView(idxBytes.buffer);
+  const BPP      = 14;
+  const origSize = N * BPP;
+
+  const idxBytes = new Uint8Array(16);
+  const idv      = new DataView(idxBytes.buffer);
   idv.setUint32(0,  0,         true);
   idv.setUint32(4,  origSize,  true);
   idv.setUint32(8,  0,         true);
   idv.setUint32(12, totalComp, true);
 
-  const hdr  = new Uint8Array(MSPZ_HDR_SIZE);
-  const hdv  = new DataView(hdr.buffer);
-  hdv.setUint32(0,  MSPZ_MAGIC,     true);
-  hdv.setUint32(4,  4,              true);
-  hdv.setUint32(8,  N,              true);
-  hdv.setUint32(12, 1,              true);
-  hdv.setUint32(16, origSize,       true);
-  hdv.setUint32(20, totalComp,      true);
-  hdv.setUint32(24, MSPZ_HDR_SIZE,  true);
-  hdv.setUint32(28, 0,              true);
+  const hdr = new Uint8Array(MSPZ_HDR_SIZE);
+  const hdv = new DataView(hdr.buffer);
+  hdv.setUint32(0,  MSPZ_MAGIC,    true);
+  hdv.setUint32(4,  4,             true);
+  hdv.setUint32(8,  N,             true);
+  hdv.setUint32(12, 1,             true);
+  hdv.setUint32(16, origSize,      true);
+  hdv.setUint32(20, totalComp,     true);
+  hdv.setUint32(24, MSPZ_HDR_SIZE, true);
+  hdv.setUint32(28, 0,             true);
   hdr[32] = 3; hdr[33] = 0; hdr[34] = FRACTIONAL_BITS;
   hdr[35] = FLAG_HAS_DELTA | FLAG_ISOTROPIC;
   hdv.setFloat32(36, imgH, true);
@@ -190,4 +252,47 @@ function _encode(depthMap, photoGrid, imgW, imgH, gW, gH) {
   out.set(idxBytes, MSPZ_HDR_SIZE);
   out.set(compData, MSPZ_HDR_SIZE + 16);
   return out;
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+export async function encodePhotoToSplat(file, grid = 512, onProgress) {
+  const pipe = await getDepthPipeline(onProgress);
+
+  const blobUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = rej;
+      i.src = blobUrl;
+    });
+    const imgW = img.naturalWidth, imgH = img.naturalHeight;
+
+    const t0Depth = performance.now();
+    const result  = await pipe(blobUrl);
+    const depthMs = performance.now() - t0Depth;
+
+    const t0Build = performance.now();
+    const tmpC    = document.createElement('canvas');
+    tmpC.width = grid; tmpC.height = grid;
+    const ctx = tmpC.getContext('2d');
+    ctx.drawImage(img, 0, 0, grid, grid);
+    const photoGrid = ctx.getImageData(0, 0, grid, grid);
+
+    const splat     = _computeSplat(result.depth, photoGrid, imgW, imgH, grid, grid);
+    const mspzBytes = _encodeMspz(splat, imgW, imgH, grid, grid);
+    const plyBytes  = generatePly(splat);
+    const buildMs   = performance.now() - t0Build;
+
+    return { mspzBytes, plyBytes, imgW, imgH, depthMs, buildMs };
+  } finally {
+    URL.revokeObjectURL(blobUrl);
+  }
+}
+
+// Backward-compatible wrapper used by embed.js _setupLocalMode
+export async function encodePhotoToMspz(file, grid = 512, onProgress) {
+  const { mspzBytes, imgW, imgH } = await encodePhotoToSplat(file, grid, onProgress);
+  return { mspzBytes, imgW, imgH };
 }
